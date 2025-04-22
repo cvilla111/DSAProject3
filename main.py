@@ -1,26 +1,408 @@
 import pylast
-import time
+import math
 import random
+import time
+from IPython.display import clear_output
+from typing import Dict, List, Tuple
 
 API_KEY = "7008b5589d58885ace36d3221e86cbd0"
 API_SECRET = "a3f47c877288ee66e42a15bc603cffb6"
 network = pylast.LastFMNetwork(api_key=API_KEY, api_secret=API_SECRET)
 
-def make_playlist(name):
-    artist = network.get_artist(name)
-    similar = artist.get_similar(limit = 1000)
-    popularity_map = {}
-    for it in similar:
-        current = it.item
-        popularity_score = current.get_listener_count() or 0
-        track_list = current.get_top_tracks(limit = 1000)
-        tracks = []
-        for track in track_list:
-            tracks.append(track.item.title)
-        if tracks:
-            popularity_map.setdefault(popularity_score, []).extend(tracks)
+class Artist:
+    #tags -> top three tags
+    def __init__(self, ID, name, image, tags = None):
+        self.id = ID
+        self.name = name
+        self.image = image
+        self.tags = tags
 
-    scores = sorted(popularity_map.items())
+class Song:
+    #image -> cover image
+    #tags -> top three tags
+    def __init__(self, ID, artist, name, image, tags = None):
+        self.id = ID
+        self.artist = artist
+        self.name = name
+        self.image = image
+        self.tags = tags
+
+def TryGetCover(track: pylast.Track):
+    try:
+        return track.get_cover_image()
+    except Exception:
+        return None
+
+def TryGetImage(artist: pylast.Artist):
+    try:
+        return artist.get_image()
+    except Exception:
+        return None
+
+def initialQuery(type):
+    query = input(f"Enter search query for favorite {type}: ")
+
+    itemIDs = []
+    itemText = []
+    itemObjects = []
+    count = 0
+    # Queries database, then displays
+    if type == "track":
+        searchResults = network.search_for_track("", query).get_next_page()
+        for item in searchResults[:10]:
+            artistName = item.get_artist().get_name()
+            trackName = item.get_title()
+            itemText.append(f"[{count}]: {trackName} by {artistName}")
+            itemIDs.append(f"{artistName} - {trackName}")
+            itemObjects.append(item)
+            count += 1
+
+    elif type == "artist":
+        searchResults = network.search_for_artist(query).get_next_page()
+        for item in searchResults[:10]:
+            artistName = item.get_name()
+            itemText.append(f"[{count}]: {artistName}")
+            itemIDs.append(artistName)
+            itemObjects.append(item)
+            count += 1
+    else:
+        return "Invalid query"
+
+    print("-------------RESULTS-------------")
+    for entry in itemText:
+        print(entry)
+
+    while True:
+        try:
+            index = int(input(f"Pick a {type} by index (0 to {count - 1}): "))
+            if 0 <= index < count:
+                break
+            print("Invalid index.")
+        except ValueError:
+            print("Enter a number.")
+
+    selected = itemObjects[index]
+
+    if type == "track":
+        track = network.get_track(selected.get_artist().get_name(), selected.get_title())
+        title = track.get_title()
+        artistId = track.get_artist().get_mbid()
+        artistName = track.get_artist().get_name()
+        return (track, Song(
+            ID=f"{artistName} - {title}",
+            artist=artistName,
+            name=title,
+            image=TryGetCover(track),
+            tags=None
+        ))
+
+    elif type == "artist":
+        artist = network.get_artist(selected.get_name())
+        id = artist.get_mbid()
+        return (artist, Artist(
+            ID=id,
+            name=artist.get_name(),
+            image=TryGetImage(artist),
+            tags=None
+        ))
+
+# Main function to generate our track pool from different sources
+# I'm using a 3-part approach to ensure musical diversity:
+# 1. Similar tracks to seed track
+# 2. Tracks from similar artists
+# 3. Tracks from related tags
+def generateTrackPool_tags(count: int, trackSeed: pylast.Track, artistSeed: pylast.Artist = None):
+    x = 0
+    y = 0
+    z = 0
+
+    while (True):
+        sigma = count * (1 / 20)
+        mean = count * 1 / 4
+        x = math.floor(random.gauss(mean, sigma))  # Tracks from similar tracks
+        y = math.floor(random.gauss(mean, sigma))  # Tracks from similar artists
+        z = count - x - y  # Tracks from tags
+        if (x > 0 and y > 0 and z > 0):
+            break
+
+    pool = set()  # Using a set to automatically avoid duplicates
+    uniqueTags = set()  # Track all tags for later use
+    uniqueArtists = set()  # Track all artists for potential future features
+    uniqueArtists.add(
+        Artist(ID=artistSeed.get_mbid(), name=artistSeed.get_name(), image=TryGetImage(artistSeed), tags=None))
+
+    print(f"Generating {x} tracks from similar tracks...")
+    # Step one: generate x similar tracks TO seed track using BFS-kinda approach
+    tempTrack = trackSeed
+    done = False
+    while not done:
+        similarTracks = tempTrack.get_similar(limit=x)
+        update = True
+        for similar in similarTracks:
+            track = similar.item
+
+            # Update the temp track for next iteration (BFS-like traversal)
+            if update:
+                tempTrack = track
+                update = False
+
+            tags = track.get_top_tags()
+            # Fixed potential error when no tags are returned
+            firstTags = [l.item.get_name() for l in tags[:3]] if tags else []
+            uniqueTags.update(firstTags)
+
+            # Add track to our pool
+            pool.add(Song(
+                ID=track.get_mbid(),
+                artist=track.get_artist().get_name(),
+                name=track.get_name(),
+                image=TryGetCover(track),
+                tags=firstTags
+            ))
+            # Fixed termination condition to ensure we get enough tracks
+            if (len(pool) >= x):
+                done = True
+                break
+
+    # Throttle API calls to avoid rate limiting
+    time.sleep(1)
+
+    print(f"Generating {y} tracks from similar artists...")
+    # Step two: generate y similar tracks from similar artists
+    done = False
+    tempArtist = artistSeed
+    tempCount = 0
+
+    while not done:
+        similarArtists = tempArtist.get_similar(limit=3)
+        update = True
+        for similar in similarArtists:
+            artist = similar.item
+
+            # Update for next iteration
+            if update:
+                tempArtist = artist
+                update = False
+
+            # Add to our artist collection
+            uniqueArtists.add(Artist(
+                ID=artist.get_mbid(),
+                name=artist.get_name(),
+                image=TryGetImage(artist),
+                tags=None
+            ))
+
+            # Get some albums from this artist
+            albums = artist.get_top_albums(limit=2)
+
+            for top in albums:
+                album = top.item
+
+                # Handle edge case where a track might be a single with no album
+                try:
+                    tracks = album.get_tracks()
+                except pylast.WSError:
+                    continue
+
+                # This adds unpredictability while still being curated
+                randomTracks = [t for t in tracks if random.choice([True, False])]
+                for track in randomTracks:
+                    tags = track.get_top_tags()
+                    firstTags = [l.item.get_name() for l in tags[:3]] if tags else []
+                    uniqueTags.update(firstTags)
+                    pool.add(Song(
+                        ID=track.get_mbid(),
+                        artist=track.get_artist().get_name(),
+                        name=track.get_name(),
+                        image=TryGetCover(track),
+                        tags=firstTags
+                    ))
+                    tempCount += 1
+                    if tempCount >= y:
+                        done = True
+                        break
+                if done:
+                    break
+            if done:
+                break
+
+    # Throttle API calls again
+    time.sleep(1)
+
+    print(f"Generating {z} tracks from popular tags...")
+    # Step three: generate z tracks from popular tags related to the seed track and artist
+    tag_count = 0
+    tag_list = list(uniqueTags)
+    random.shuffle(tag_list)  # Shuffle to get different tags each time
+
+    for tag_name in tag_list:
+        if tag_count >= z:
+            break
+
+        try:
+            tag = network.get_tag(tag_name)
+            top_tracks = tag.get_top_tracks(limit=5)
+
+            for top in top_tracks:
+                track = top.item
+                if tag_count >= z:
+                    break
+
+                # Avoid duplicates by checking if the track is already in the pool
+                # This ensures variety even with overlapping tags
+                track_id = f"{track.get_artist().get_name()} - {track.get_name()}"
+                is_duplicate = any(s.id == track_id for s in pool)
+
+                if not is_duplicate:
+                    tags = track.get_top_tags()
+                    firstTags = [l.item.get_name() for l in tags[:3]] if tags else []
+                    pool.add(Song(
+                        ID=track_id,
+                        artist=track.get_artist().get_name(),
+                        name=track.get_name(),
+                        image=TryGetCover(track),
+                        tags=firstTags
+                    ))
+                    tag_count += 1
+        except pylast.WSError:
+            continue  # Skip tags that cause errors
+
+    return pool
+
+# Algorithm to generate a diverse but cohesive playlist from our track pool
+def generate_playlist_tags(track_pool, num_tracks):
+    """Generate a playlist from the track pool based on tags and variety."""
+    # If we have fewer tracks than requested, just return what we have
+    if len(track_pool) <= num_tracks:
+        return list(track_pool)
+
+    available_tracks = list(track_pool)
+
+    all_tags = {}
+    for track in available_tracks:
+        if track.tags:
+            for tag in track.tags:
+                if tag in all_tags:
+                    all_tags[tag] += 1
+                else:
+                    all_tags[tag] = 1
+
+    # Create a playlist with diverse tags
+    playlist = []
+    used_tags = set()
+
+    # Start with a few random tracks to seed the playlist and create initial variety
+    seed_size = min(3, len(available_tracks))
+    seed_tracks = random.sample(available_tracks, seed_size)
+
+    for track in seed_tracks:
+        playlist.append(track)
+        available_tracks.remove(track)
+        if track.tags:
+            used_tags.update(track.tags)
+
+    while len(playlist) < num_tracks and available_tracks:
+        # Score each track based on how much variety it adds
+        best_track = None
+        best_score = -1
+
+        for track in available_tracks:
+            score = 0
+            if track.tags:
+                # Higher score for tags not already in playlist
+                # This prioritizes musical diversity
+                for tag in track.tags:
+                    if tag not in used_tags:
+                        score += 3
+                    else:
+                        score += 1
+
+                        # Add some randomness to avoid predictability
+            # This ensures different playlists each time
+            score += random.random()
+
+            if score > best_score:
+                best_score = score
+                best_track = track
+
+        if best_track:
+            playlist.append(best_track)
+            available_tracks.remove(best_track)
+            if best_track.tags:
+                used_tags.update(best_track.tags)
+        else:
+            # Fallback: add a random track if scoring fails
+            track = random.choice(available_tracks)
+            playlist.append(track)
+            available_tracks.remove(track)
+
+    return playlist
+
+# Function to display the playlist in a user-friendly format
+def display_playlist(playlist, title="Your Personalized Playlist"):
+    """Display the generated playlist with track info and tags."""
+    print("\n" + "=" * 60)
+    print(f" {title} ".center(60, "="))
+    print("=" * 60)
+
+    for i, track in enumerate(playlist):
+        print(f"\n{i + 1}. {track.name} by {track.artist}")
+        if track.tags:
+            print(f"   Tags: {', '.join(track.tags)}")
+
+    print("\n" + "=" * 60)
+
+def generate_track_pool_popularity(track_seed: pylast.Track, artist_seed: pylast.Artist) -> List[Tuple[int, List[Song]]]:
+    from pylast import Track, Artist
+    def generate_pool(seed):
+        popularity_map: Dict[int, List[Song]] = {}
+        if isinstance(seed, Track):
+            similar = seed.get_similar(limit = 10)
+            for i in similar:
+                current = i.item
+                popularity_score = current.get_listener_count() or 0
+                song = Song(
+                    ID = i.get_mbid(),
+                    artist = i.get_artist().get_name(),
+                    name = i.get_title(),
+                    image = TryGetCover(i),
+                    tags = None
+                )
+                popularity_map.setdefault(popularity_score, []).append(song)
+
+                # Throttle API calls to avoid rate limiting
+                time.sleep(1)
+        elif isinstance(seed, Artist):
+            similar = seed.get_similar(limit = 10)
+            for i in similar:
+                current = i.item
+                popularity_score = current.get_listener_count() or 0
+
+                for track in current.get_top_tracks(limit = 5):
+                    current = track.item
+                    song = Song(
+                        ID = i.get_mbid(),
+                        artist = i.get_artist().get_name(),
+                        name = i.get_title(),
+                        image = TryGetCover(i),
+                        tags = None
+                    )
+                    popularity_map.setdefault(popularity_score, []).append(song)
+                # Throttle API calls to avoid rate limiting
+                time.sleep(1)
+        return popularity_map
+
+
+    similar_tracks = generate_pool(track_seed)
+    similar_artist = generate_pool(artist_seed)
+
+    tempT = sorted(similar_tracks.items())
+    tempA = sorted(similar_artist.items())
+    scores = tempT + tempA
+    return scores
+
+def generate_playlist_popularity(scores: List[Tuple[int, List[Song]]], size: int) -> List[Song]:
+
     split_point = int(len(scores) * 0.30)
     popular_scores = scores[len(scores) - split_point:]
     remaining_scores = scores[:len(scores) - split_point]
@@ -28,29 +410,73 @@ def make_playlist(name):
     used = set()
     def insert_song(bucket):
         while True:
-            popularity_score, tracks = random.choice(bucket)
-            track = random.choice(tracks)
-            if track not in used:
-                used.add(track)
-                return track
+            popularity_score, songs = random.choice(bucket)
+            song = random.choice(songs)
+            if song not in used:
+                used.add(song.id)
+                return song
 
-    playlist = []
-    for it in range(int(250 * 0.70)):
+    playlist: List[Song] = []
+    for it in range(int(size * 0.70)):
         playlist.append(insert_song(popular_scores))
-    for it in range(int(250 * 0.30)):
+    for it in range(int(size * 0.30)):
         playlist.append(insert_song(remaining_scores))
 
     random.shuffle(playlist)
     return playlist
 
 def main():
-    name = input("Which artist would you like to base your playlist on?\n")
-    start = time.time()
-    playlist = make_playlist(name)
-    for track in playlist:
-        print(track)
-    elapsed = time.time() - start
-    print(f"Time: {elapsed:.2f} seconds")
+    print("🎵 Welcome to the Super Auto Playlist 🎵")
+    print("\nThis program will generate a personalized playlist based on:")
+    print("  - A track you like")
+    print("  - An artist you like")
 
+    # Get seed track and artist from user
+    (t, tempObjectT) = initialQuery("track")
+    (a, tempObjectA) = initialQuery("artist")
+
+    print(f"\nGenerating recommendations based on:")
+    print(f"Track: {tempObjectT.name}")
+    print(f"Artist: {tempObjectA.name}")
+    print("\nWould you like us to build your track pool based off of tags or popularity?")
+    choice = int(input("1 = Tags\n2 = Popularity\n"))
+    print("\nPlease wait while we build your track pool...")
+
+    if choice == 1:
+        # I set 40 as default to give us a good-sized pool to select from
+        trackPool = generateTrackPool_tags(40, t, a)
+        print(f"\nCreated a pool of {len(trackPool)} tracks!")
+
+        # Let user customize playlist size
+        try:
+            playlist_size = int(input("\nHow many tracks in your playlist? (default: 15) ") or 15)
+        except ValueError:
+            print("Using default size of 15 tracks")
+            playlist_size = 15
+
+        # Generate the actual playlist using our tag-based algorithm
+        playlist = generate_playlist_tags(trackPool, playlist_size)
+
+        # Display the results nicely formatted
+        title = f"Personalized Playlist based on {tempObjectT.name} and {tempObjectA.name}"
+        display_playlist(playlist, title)
+
+    if choice == 2:
+        trackPool = generate_track_pool_popularity(t, a)
+        print(f"\nCreated a pool of {len(trackPool)} tracks!")
+
+        # Let user customize playlist size
+        try:
+            playlist_size = int(input("\nHow many tracks in your playlist? (default: 15) ") or 15)
+        except ValueError:
+            print("Using default size of 15 tracks")
+            playlist_size = 15
+
+        # Generate the actual playlist using our tag-based algorithm
+        playlist = generate_playlist_popularity(trackPool, playlist_size)
+
+        # Display the results nicely formatted
+        title = f"Personalized Playlist based on {tempObjectT.name} and {tempObjectA.name}"
+        display_playlist(playlist, title)
 if __name__ == "__main__":
     main()
