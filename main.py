@@ -1,3 +1,562 @@
+import tkinter as tk
+from tkinter import ttk, scrolledtext, filedialog, messagebox
+import threading
+import sys
+from io import StringIO
+import random
+import main as pg
+
+
+# Redirect console output to the UI
+class RedirectOutput:
+    def __init__(self, text_widget):
+        self.output = text_widget
+        self.buffer = ""
+
+    def write(self, string):
+        self.buffer += string
+        self.output.insert(tk.END, string)
+        self.output.see(tk.END)  # Auto-scroll
+
+    def flush(self):
+        pass
+
+
+# Initial screen to select playlist generation method
+class StartupScreen:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Choose Your Playlist")
+        self.root.geometry("400x300")
+
+        # Color scheme
+        bg = "#121212"
+        green = "#1DB954"
+        text = "#FFFFFF"
+
+        self.root.configure(bg=bg)
+
+        # Setup styling
+        style = ttk.Style()
+        style.configure("TFrame", background=bg)
+        style.configure("TLabel", background=bg, foreground=text)
+        style.configure("TButton", background=green, foreground="black", padding=5)
+
+        # Selected algorithm
+        self.algorithm = tk.StringVar(value="tags")
+
+        # Main container
+        main = ttk.Frame(self.root, padding="20")
+        main.pack(fill=tk.BOTH, expand=True)
+
+        # Heading
+        welcome = ttk.Label(main, text="Music Playlist Generator", font=("Arial", 18, "bold"))
+        welcome.pack(pady=(20, 10))
+
+        subtitle = ttk.Label(main, text="How would you like to build your playlist?", font=("Arial", 12))
+        subtitle.pack(pady=(0, 30))
+
+        # Options
+        option_frame = ttk.Frame(main)
+        option_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        # Tags option button
+        tags_btn = ttk.Button(option_frame, text="By Music Tags",
+                              command=lambda: self.start_app("tags"),
+                              width=20)
+        tags_btn.pack(pady=10)
+
+        tags_desc = ttk.Label(option_frame, text="Find music with similar styles and genres")
+        tags_desc.pack(pady=(0, 15))
+
+        # Popularity option button
+        pop_btn = ttk.Button(option_frame, text="By Popularity",
+                             command=lambda: self.start_app("popularity"),
+                             width=20)
+        pop_btn.pack(pady=10)
+
+        pop_desc = ttk.Label(option_frame, text="Mix popular tracks with hidden gems")
+        pop_desc.pack(pady=(0, 15))
+
+    def start_app(self, algorithm):
+        self.algorithm = algorithm
+        self.root.destroy()
+
+
+# Main application after method selection
+class PlaylistApp:
+    def __init__(self, root, algorithm="tags"):
+        self.root = root
+        self.root.title("Music Playlist Generator")
+        self.root.geometry("750x550")
+
+        # App variables
+        self.track_query = tk.StringVar()
+        self.artist_query = tk.StringVar()
+        self.playlist_size = tk.IntVar(value=15)
+        self.algorithm = algorithm  # Set from startup selection
+        self.search_mode = "track"
+
+        # Data storage
+        self.track_results = []
+        self.artist_results = []
+        self.track_objects = []
+        self.artist_objects = []
+        self.playlist = []
+
+        self.create_ui()
+
+    def create_ui(self):
+        # Color scheme
+        bg = "#121212"
+        green = "#1DB954"
+        text = "#FFFFFF"
+        alt_bg = "#282828"
+
+        self.root.configure(bg=bg)
+
+        # Configure widget styles
+        style = ttk.Style()
+        style.configure("TFrame", background=bg)
+        style.configure("TLabel", background=bg, foreground=text)
+        style.configure("TButton", background=green, foreground="black", padding=5)
+        style.configure("TLabelframe", background=bg)
+        style.configure("TLabelframe.Label", background=bg, foreground=text)
+        style.configure("TCombobox", fieldbackground=alt_bg, foreground=text)
+
+        # Main container
+        main = ttk.Frame(self.root, padding="10")
+        main.pack(fill=tk.BOTH, expand=True)
+
+        # Display header with selected mode
+        mode_text = "Music Tags" if self.algorithm == "tags" else "Popularity"
+        header = ttk.Label(main, text=f"Choose Your Playlist - {mode_text} Mode", font=("Arial", 16, "bold"))
+        header.pack(pady=(0, 15))
+
+        # Search section
+        search_frame = ttk.LabelFrame(main, text="Search", padding="10")
+        search_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # Track search row
+        ttk.Label(search_frame, text="Track:").grid(row=0, column=0, padx=5, pady=5)
+        ttk.Entry(search_frame, textvariable=self.track_query, width=30).grid(row=0, column=1, padx=5, pady=5)
+        ttk.Button(search_frame, text="Search", command=self.search_track).grid(row=0, column=2, padx=5, pady=5)
+        self.track_label = ttk.Label(search_frame, text="None selected")
+        self.track_label.grid(row=0, column=3, padx=5, pady=5)
+
+        # Artist search row
+        ttk.Label(search_frame, text="Artist:").grid(row=1, column=0, padx=5, pady=5)
+        ttk.Entry(search_frame, textvariable=self.artist_query, width=30).grid(row=1, column=1, padx=5, pady=5)
+        ttk.Button(search_frame, text="Search", command=self.search_artist).grid(row=1, column=2, padx=5, pady=5)
+        self.artist_label = ttk.Label(search_frame, text="None selected")
+        self.artist_label.grid(row=1, column=3, padx=5, pady=5)
+
+        # Results section for search results
+        results_frame = ttk.LabelFrame(main, text="Results", padding="10")
+        results_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # Listbox to display search results
+        self.results_box = tk.Listbox(results_frame, height=6, width=60, bg=alt_bg, fg=text, selectbackground=green)
+        self.results_box.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Select button for search results
+        select_btn = ttk.Button(results_frame, text="Select", command=self.select_result)
+        select_btn.pack(pady=5)
+
+        # Options section
+        options_frame = ttk.LabelFrame(main, text="Options", padding="10")
+        options_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # Playlist size control
+        size_frame = ttk.Frame(options_frame)
+        size_frame.pack(side=tk.LEFT, padx=20, pady=5)
+
+        ttk.Label(size_frame, text="Playlist Size:").pack(side=tk.LEFT, padx=5)
+        ttk.Spinbox(size_frame, from_=5, to=50, textvariable=self.playlist_size, width=5).pack(side=tk.LEFT, padx=5)
+
+        # Generate button - disabled until track and artist are selected
+        self.generate_btn = ttk.Button(options_frame, text="Generate Playlist",
+                                       command=self.generate_playlist, state=tk.DISABLED)
+        self.generate_btn.pack(side=tk.LEFT, padx=20)
+
+        # Save button - disabled until playlist is generated
+        self.save_btn = ttk.Button(options_frame, text="Save Playlist",
+                                   command=self.save_playlist, state=tk.DISABLED)
+        self.save_btn.pack(side=tk.LEFT, padx=5)
+
+        # Console output area
+        console_frame = ttk.LabelFrame(main, text="Musical Discovery Lab", padding="10")
+        console_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # Text widget for progress output
+        self.output_text = scrolledtext.ScrolledText(console_frame, height=6, bg=alt_bg, fg=text)
+        self.output_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Redirect stdout to our text widget
+        self.stdout_redirect = RedirectOutput(self.output_text)
+        sys.stdout = self.stdout_redirect
+
+        # Status bar at bottom
+        self.status = tk.StringVar(value="Ready")
+        status_bar = ttk.Label(self.root, textvariable=self.status, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    # Track search function
+    def search_track(self):
+        if not self.track_query.get().strip():
+            return
+
+        self.status.set("Searching for tracks...")
+        self.output_text.delete('1.0', tk.END)
+        self.results_box.delete(0, tk.END)
+        self.search_mode = "track"
+
+        # Run search in background thread
+        threading.Thread(target=self._do_track_search, daemon=True).start()
+
+    # Background thread for track search
+    def _do_track_search(self):
+        try:
+            old_stdout = sys.stdout
+            capture = StringIO()
+            sys.stdout = capture
+
+            self.track_results = []
+            self.track_objects = []
+
+            # Call API to find tracks
+            results = pg.network.search_for_track("", self.track_query.get()).get_next_page()
+
+            for i, track in enumerate(results[:10]):
+                artist_name = track.get_artist().get_name()
+                track_name = track.get_title()
+                self.track_results.append(f"[{i}] {track_name} by {artist_name}")
+                self.track_objects.append(track)
+
+            sys.stdout = old_stdout
+            self.root.after(0, self._update_track_results)
+        except Exception as e:
+            sys.stdout = old_stdout
+            print(f"Error during search: {str(e)}")
+            self.root.after(0, lambda: self.status.set("Search failed!"))
+
+    # Update UI with track results
+    def _update_track_results(self):
+        for result in self.track_results:
+            self.results_box.insert(tk.END, result)
+        self.status.set(f"Found {len(self.track_results)} tracks")
+
+    # Artist search function
+    def search_artist(self):
+        if not self.artist_query.get().strip():
+            return
+
+        self.status.set("Searching for artists...")
+        self.output_text.delete('1.0', tk.END)
+        self.results_box.delete(0, tk.END)
+        self.search_mode = "artist"
+
+        # Run search in background thread
+        threading.Thread(target=self._do_artist_search, daemon=True).start()
+
+    # Background thread for artist search
+    def _do_artist_search(self):
+        try:
+            old_stdout = sys.stdout
+            capture = StringIO()
+            sys.stdout = capture
+
+            self.artist_results = []
+            self.artist_objects = []
+
+            # Call API to find artists
+            results = pg.network.search_for_artist(self.artist_query.get()).get_next_page()
+
+            for i, artist in enumerate(results[:10]):
+                name = artist.get_name()
+                self.artist_results.append(f"[{i}] {name}")
+                self.artist_objects.append(artist)
+
+            sys.stdout = old_stdout
+            self.root.after(0, self._update_artist_results)
+        except Exception as e:
+            sys.stdout = old_stdout
+            print(f"Error during search: {str(e)}")
+            self.root.after(0, lambda: self.status.set("Search failed!"))
+
+    # Update UI with artist results
+    def _update_artist_results(self):
+        for result in self.artist_results:
+            self.results_box.insert(tk.END, result)
+        self.status.set(f"Found {len(self.artist_results)} artists")
+
+    # Handle selection from results list
+    def select_result(self):
+        selected = self.results_box.curselection()
+        if not selected:
+            return
+
+        idx = selected[0]
+
+        # Handle track selection
+        if self.search_mode == "track":
+            selected_track = self.track_objects[idx]
+            track = pg.network.get_track(
+                selected_track.get_artist().get_name(),
+                selected_track.get_title()
+            )
+            title = track.get_title()
+            artist = track.get_artist().get_name()
+
+            self.selected_track = track
+            self.selected_track_obj = pg.Song(
+                ID=f"{artist} - {title}",
+                artist=artist,
+                name=title,
+                image=pg.TryGetCover(track),
+                tags=None
+            )
+            self.track_label.config(text=f"{title}")
+
+        # Handle artist selection
+        elif self.search_mode == "artist":
+            selected_artist = self.artist_objects[idx]
+            artist = pg.network.get_artist(selected_artist.get_name())
+
+            self.selected_artist = artist
+            self.selected_artist_obj = pg.Artist(
+                ID=artist.get_mbid() or artist.get_name(),
+                name=artist.get_name(),
+                image=pg.TryGetImage(artist),
+                tags=None
+            )
+            self.artist_label.config(text=f"{artist.get_name()}")
+
+        # Enable generate button if both track and artist are selected
+        if hasattr(self, 'selected_track') and hasattr(self, 'selected_artist'):
+            self.generate_btn.config(state=tk.NORMAL)
+
+    # Generate playlist based on selections
+    def generate_playlist(self):
+        if not hasattr(self, 'selected_track') or not hasattr(self, 'selected_artist'):
+            return
+
+        self.status.set("Working on it...")
+        self.generate_btn.config(state=tk.DISABLED)
+        self.output_text.delete('1.0', tk.END)
+
+        # Run generation in background thread
+        threading.Thread(target=self._do_generate_playlist, daemon=True).start()
+
+    # Fetch tags for track/artist
+    def _get_tags(self, item, limit=10):
+        tags = set()
+        try:
+            item_tags = item.get_top_tags(limit=limit)
+            for tag in item_tags:
+                tags.add(tag.item.get_name().lower())
+        except:
+            pass
+        return tags
+
+    # Tags-based playlist generation algorithm
+    def _generate_playlist_by_tags(self, track_pool, size):
+        seed_tags = set()
+
+        # Get tags from selected track and artist
+        track_tags = self._get_tags(self.selected_track)
+        seed_tags.update(track_tags)
+
+        artist_tags = self._get_tags(self.selected_artist)
+        seed_tags.update(artist_tags)
+
+        print(f"Found {len(seed_tags)} tags from your selections")
+        if seed_tags:
+            print(f"Tags: {', '.join(seed_tags)}")
+
+        if not seed_tags:
+            print("No tags found, using random selection")
+            return random.sample(track_pool, min(size, len(track_pool)))
+
+        # Get tags for all potential tracks
+        for track in track_pool:
+            if not hasattr(track, 'tags') or not track.tags:
+                try:
+                    lastfm_track = pg.network.get_track(track.artist, track.name)
+                    track_tags = self._get_tags(lastfm_track, limit=5)
+                    track.tags = list(track_tags)
+                except:
+                    track.tags = []
+
+        # Score tracks by tag similarity
+        scored_tracks = []
+        for track in track_pool:
+            if track.name == self.selected_track_obj.name and track.artist == self.selected_track_obj.artist:
+                continue
+
+            track_tags = set(track.tags) if hasattr(track, 'tags') and track.tags else set()
+
+            # Calculate Jaccard similarity between track tags and seed tags
+            if track_tags and seed_tags:
+                intersection = len(track_tags.intersection(seed_tags))
+                union = len(track_tags.union(seed_tags))
+                similarity = intersection / union if union > 0 else 0
+            else:
+                similarity = 0
+
+            scored_tracks.append((track, similarity))
+
+        # Sort by similarity score
+        scored_tracks.sort(key=lambda x: x[1], reverse=True)
+
+        result = [track for track, _ in scored_tracks[:size]]
+
+        # Add random tracks if needed to reach desired size
+        if len(result) < size:
+            remaining = size - len(result)
+            remaining_pool = [t for t in track_pool if t not in result]
+            if remaining_pool:
+                result.extend(random.sample(remaining_pool, min(remaining, len(remaining_pool))))
+
+        print(f"Generated {len(result)} tracks based on music tags")
+        return result
+
+    # Popularity-based playlist generation algorithm
+    def _generate_playlist_by_popularity(self, track_pool, size):
+        print("Analyzing track popularity...")
+
+        scored_tracks = []
+
+        # Score tracks by popularity metrics
+        for track in track_pool:
+            if track.name == self.selected_track_obj.name and track.artist == self.selected_track_obj.artist:
+                continue
+
+            try:
+                lastfm_track = pg.network.get_track(track.artist, track.name)
+
+                try:
+                    playcount = int(lastfm_track.get_playcount())
+                except:
+                    playcount = 0
+
+                try:
+                    listeners = int(lastfm_track.get_listener_count())
+                except:
+                    listeners = 0
+
+                popularity = playcount + (listeners * 10)
+
+            except:
+                popularity = random.randint(1, 1000)
+
+            scored_tracks.append((track, popularity))
+
+        # Sort by popularity
+        scored_tracks.sort(key=lambda x: x[1], reverse=True)
+
+        # Take top 60% popular tracks
+        top_count = int(size * 0.6)
+        top_tracks = [track for track, _ in scored_tracks[:top_count]]
+
+        # Mix in some random tracks for diversity
+        remaining_count = size - len(top_tracks)
+        remaining_pool = [track for track, _ in scored_tracks[top_count:]]
+
+        if remaining_pool and remaining_count > 0:
+            random_tracks = random.sample(remaining_pool, min(remaining_count, len(remaining_pool)))
+        else:
+            random_tracks = []
+
+        result = top_tracks + random_tracks
+
+        print(f"Generated {len(result)} tracks based on popularity")
+        return result
+
+    # Background thread for playlist generation
+    def _do_generate_playlist(self):
+        try:
+            method = "Music Tags" if self.algorithm == "tags" else "Popularity"
+            print(f"Building playlist based on {self.selected_track_obj.name} & {self.selected_artist_obj.name}")
+
+            # Get pool of potential tracks
+            track_pool = pg.generateTrackPool(40, self.selected_track, self.selected_artist)
+            print(f"Found {len(track_pool)} potential tracks!")
+
+            size = self.playlist_size.get()
+
+            # Generate playlist using selected method
+            if self.algorithm == "tags":
+                self.playlist = self._generate_playlist_by_tags(track_pool, size)
+            else:
+                self.playlist = self._generate_playlist_by_popularity(track_pool, size)
+
+            title = f"Playlist inspired by {self.selected_track_obj.name} and {self.selected_artist_obj.name}"
+            pg.display_playlist(self.playlist, title)
+
+            self.root.after(0, self._update_after_generation)
+        except Exception as e:
+            print(f"Error: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda: self.status.set("Error: Playlist generation failed"))
+            self.root.after(0, lambda: self.generate_btn.config(state=tk.NORMAL))
+
+    # Update UI after playlist generation
+    def _update_after_generation(self):
+        self.status.set("Done! Playlist ready.")
+        self.generate_btn.config(state=tk.NORMAL)
+        self.save_btn.config(state=tk.NORMAL)
+
+    # Save playlist to file
+    def save_playlist(self):
+        if not self.playlist:
+            return
+
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+
+        if not filename:
+            return
+
+        try:
+            method = "Music Tags" if self.algorithm == "tags" else "Popularity"
+
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"Playlist based on {self.selected_track_obj.name} and {self.selected_artist_obj.name}\n")
+                f.write(f"Generated using {method} matching\n")
+                f.write("-" * 50 + "\n\n")
+
+                for i, track in enumerate(self.playlist):
+                    f.write(f"{i + 1}. {track.name} by {track.artist}\n")
+                    if track.tags:
+                        f.write(f"   Tags: {', '.join(track.tags)}\n")
+                    f.write("\n")
+
+            self.status.set(f"Playlist saved to {filename}")
+        except Exception as e:
+            self.status.set(f"Error saving file: {e}")
+
+
+# Main app entry point
+def main():
+    # First show the startup screen to choose method
+    startup = tk.Tk()
+    startup_app = StartupScreen(startup)
+    startup.mainloop()
+
+    # Get the algorithm choice from startup screen
+    algorithm = startup_app.algorithm
+
+    root = tk.Tk()
+    app = PlaylistApp(root, algorithm)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
 import pylast
 import math
 import random
@@ -362,10 +921,10 @@ def generate_track_pool_popularity(track_seed: pylast.Track, artist_seed: pylast
                 current = i.item
                 popularity_score = current.get_listener_count() or 0
                 song = Song(
-                    ID = i.get_mbid(),
-                    artist = i.get_artist().get_name(),
-                    name = i.get_title(),
-                    image = TryGetCover(i),
+                    ID = current.get_mbid(),
+                    artist = current.get_artist().get_name(),
+                    name = current.get_title(),
+                    image = TryGetCover(current),
                     tags = None
                 )
                 popularity_map.setdefault(popularity_score, []).append(song)
@@ -379,12 +938,12 @@ def generate_track_pool_popularity(track_seed: pylast.Track, artist_seed: pylast
                 popularity_score = current.get_listener_count() or 0
 
                 for track in current.get_top_tracks(limit = 5):
-                    current = track.item
+                    t = track.item
                     song = Song(
-                        ID = i.get_mbid(),
-                        artist = i.get_artist().get_name(),
-                        name = i.get_title(),
-                        image = TryGetCover(i),
+                        ID = t.get_mbid(),
+                        artist = t.get_artist().get_name(),
+                        name = t.get_title(),
+                        image = TryGetCover(t),
                         tags = None
                     )
                     popularity_map.setdefault(popularity_score, []).append(song)
