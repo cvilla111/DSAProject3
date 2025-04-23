@@ -1,4 +1,5 @@
 import tkinter as tk
+from collections import defaultdict
 from tkinter import ttk, scrolledtext, filedialog, messagebox
 import threading
 import sys
@@ -560,7 +561,6 @@ def main():
     app = PlaylistApp(root, algorithm)
     root.mainloop()
 
-
 if __name__ == "__main__":
     main()
 
@@ -575,23 +575,28 @@ API_KEY = "7008b5589d58885ace36d3221e86cbd0"
 API_SECRET = "a3f47c877288ee66e42a15bc603cffb6"
 network = pylast.LastFMNetwork(api_key=API_KEY, api_secret=API_SECRET)
 
+
 class Artist:
-    #tags -> top three tags
-    def __init__(self, ID, name, image, tags = None):
+    # tags -> top three tags
+    def __init__(self, ID, name, image, tags=None):
         self.id = ID
         self.name = name
         self.image = image
         self.tags = tags
 
+
 class Song:
-    #image -> cover image
-    #tags -> top three tags
-    def __init__(self, ID, artist, name, image, tags = None):
+    # image -> cover image
+    # tags -> top three tags
+    def __init__(self, ID, artist, name, image, tags=None, playcount = 0):
+        self.playcount = None
         self.id = ID
         self.artist = artist
         self.name = name
         self.image = image
         self.tags = tags
+        self.playcount = playcount
+
 
 def TryGetCover(track: pylast.Track):
     try:
@@ -599,12 +604,14 @@ def TryGetCover(track: pylast.Track):
     except Exception:
         return None
 
+
 def TryGetImage(artist: pylast.Artist):
     try:
         return artist.get_image()
     except Exception:
         return None
-    
+
+
 def TryGetTags(track: pylast.Track):
     try:
         return track.get_top_tags()
@@ -679,71 +686,70 @@ def initialQuery(type):
             tags=None
         ))
 
-#trackSeed,artistSeed are pylast objects
-#I know that just calling get_recommended on like 400 tracks is cheating, so I want to create a track pool with varying sources
-#1/4 of the tracks will be generated from lastFM's recommendation algorithm (simple: quarter cheating)
-#1/4 of the tracks will be generated from related artists
-#Remaining tracks generated from the highest frequency tags of the tracks form the last three
-#get some random artists -> get random albums -> get random songs from each
 
-#After, pad with some random songs
+# trackSeed,artistSeed are pylast objects
+# I know that just calling get_recommended on like 400 tracks is cheating, so I want to create a track pool with varying sources
+# 1/4 of the tracks will be generated from lastFM's recommendation algorithm (simple: quarter cheating)
+# 1/4 of the tracks will be generated from related artists
+# Remaining tracks generated from the highest frequency tags of the tracks form the last three
+# get some random artists -> get random albums -> get random songs from each
 
-#outputs custom objects not pylast objects
+# After, pad with some random songs
+
+# outputs custom objects not pylast objects
 def generateTrackPool_tags(count: int, trackSeed: pylast.Track, artistSeed: pylast.Artist = None):
-    
-    #I found that there's some edge cases that arise when you don't generate enough tracks, so impose some minimum
-    if(count < 20):
+    # I found that there's some edge cases that arise when you don't generate enough tracks, so impose some minimum
+    if (count < 20):
         raise ValueError("Count needs to be >= 20")
         return 0
-    #Throttles execution to not be caught by rate limitter
-    timeRateLimit = count/10
+    # Throttles execution to not be caught by rate limitter
+    timeRateLimit = count / 10
 
-    #generate seed integers to get varying track amounts per step 
+    # generate seed integers to get varying track amounts per step
     x = 0
     y = 0
     z = 0
 
-    while(True):
-        #SYSTEM PARAMETERS
-        sigma = count * (1/8)
-        mean = count * 1/4
+    while (True):
+        # SYSTEM PARAMETERS
+        sigma = count * (1 / 8)
+        mean = count * 1 / 4
         x = math.floor(random.gauss(mean, sigma))
         y = math.floor(random.gauss(mean, sigma))
         z = count - x - y
-        if(x > 0 and y > 0 and z > 0):
+        if (x > 0 and y > 0 and z > 0):
             break
-            
-    pool = set() #Filled with Song class from this code
+
+    pool = set()  # Filled with Song class from this code
     uniqueTags = defaultdict(int)
-    uniqueArtists = set() #Filled with Artist class from this code
+    uniqueArtists = set()  # Filled with Artist class from this code
 
-    #Adding seed artist
-    uniqueArtists.add(Artist(ID = artistSeed.get_mbid() , name = artistSeed.get_name() , image = TryGetImage(artistSeed), tags = None))
+    # Adding seed artist
+    uniqueArtists.add(
+        Artist(ID=artistSeed.get_mbid(), name=artistSeed.get_name(), image=TryGetImage(artistSeed), tags=None))
 
-    #Bias the tags to the seed track -> Throughout this code, I use that lastFM api returns the tags from most frequent to least
+    # Bias the tags to the seed track -> Throughout this code, I use that lastFM api returns the tags from most frequent to least
     seedTags = trackSeed.get_top_tags()[:3]
 
     for tt in seedTags:
-        #Picked count/5 arbitrarily, but I think this should make sure step 3 uses the best tags
+        # Picked count/5 arbitrarily, but I think this should make sure step 3 uses the best tags
         tag = tt.item
-        uniqueTags[tag.get_name()] += math.floor(count/5)
+        uniqueTags[tag.get_name()] += math.floor(count / 5)
 
-
-
-    #Step one: generate x similar tracks TO seed track doing BFS-kinda thing
+    # Step one: generate x similar tracks TO seed track doing BFS-kinda thing
     tempTrack = trackSeed
     done = False
 
     while not done:
         try:
-            similarTracks = tempTrack.get_similar(limit = x)
-        except WSError:
+            similarTracks = tempTrack.get_similar(limit=x)
+        except pylast.WSError:
             print("Similar tracks not found, shutting down.")
             return
         update = True
         for similar in similarTracks:
-            
-            track = similar.item #pylist.track object
+
+            track = similar.item  # pylist.track object
 
             if update:
                 tempTrack = track
@@ -751,15 +757,15 @@ def generateTrackPool_tags(count: int, trackSeed: pylast.Track, artistSeed: pyla
 
             tags = TryGetTags(track)
 
-            #Edge case where song doens't have tags
-            if(tags == None):
-                 pool.add(Song(
-                    ID = track.get_mbid(),
-                    artist = track.get_artist().get_name(),
-                    name = track.get_name(),
-                    image = TryGetImage(track),
-                    tags = None,
-                    playcount= track.get_playcount()
+            # Edge case where song doens't have tags
+            if (tags == None):
+                pool.add(Song(
+                    ID=track.get_mbid(),
+                    artist=track.get_artist().get_name(),
+                    name=track.get_name(),
+                    image=TryGetImage(track),
+                    tags=None,
+                    playcount=track.get_playcount()
                 ))
             else:
 
@@ -768,21 +774,21 @@ def generateTrackPool_tags(count: int, trackSeed: pylast.Track, artistSeed: pyla
                     uniqueTags[u.get_name()] += 1
 
                 pool.add(Song(
-                    ID = track.get_mbid(),
-                    artist = track.get_artist().get_name(),
-                    name = track.get_name(),
-                    image = TryGetImage(track),
-                    tags = firstTags,
-                    playcount= track.get_playcount()
+                    ID=track.get_mbid(),
+                    artist=track.get_artist().get_name(),
+                    name=track.get_name(),
+                    image=TryGetImage(track),
+                    tags=firstTags,
+                    playcount=track.get_playcount()
                 ))
-            if(len(pool) == x - 1):
+            if (len(pool) == x - 1):
                 done = True
                 break
-    #throttle for rate limits
+    # throttle for rate limits
     print("--->Step 1 done<---")
-    time.sleep(timeRateLimit)   
-    
-    #Step two: generate y similar tracks to seed album, BFS kind of thing again
+    time.sleep(timeRateLimit)
+
+    # Step two: generate y similar tracks to seed album, BFS kind of thing again
     done = False
     tempArtist = artistSeed
     tempCount = 0
@@ -791,7 +797,7 @@ def generateTrackPool_tags(count: int, trackSeed: pylast.Track, artistSeed: pyla
         similarArtists = tempArtist.get_similar(limit=3)
         update = True
         for similar in similarArtists:
-            artist = similar.item  #pylast.Artist object
+            artist = similar.item  # pylast.Artist object
 
             if update:
                 tempArtist = artist
@@ -803,26 +809,25 @@ def generateTrackPool_tags(count: int, trackSeed: pylast.Track, artistSeed: pyla
                 image=TryGetImage(artist),
                 tags=None
             ))
-            
-            albums = artist.get_top_albums(limit=2)
 
+            albums = artist.get_top_albums(limit=2)
 
             for top in albums:
                 album = top.item
 
-                #Accounting for edge case of track being a single
+                # Accounting for edge case of track being a single
                 try:
                     tracks = album.get_tracks()
                 except pylast.WSError:
                     continue
 
-                randomTracks = [t for t in tracks if random.choice([True, False])] #<- from stack exchange
+                randomTracks = [t for t in tracks if random.choice([True, False])]  # <- from stack exchange
                 for track in randomTracks:
-                    #Theres some tracks that have bad database parameters for some reason, so wrap in try catch (bad I know)
+                    # Theres some tracks that have bad database parameters for some reason, so wrap in try catch (bad I know)
                     try:
-                        #Some errors from get_top_tags being blank, idk why pylast works like this but it does whatever
+                        # Some errors from get_top_tags being blank, idk why pylast works like this but it does whatever
                         tags = TryGetTags(track)
-                        if(tags == None):
+                        if (tags == None):
                             pool.add(Song(
                                 ID=track.get_mbid(),
                                 artist=track.get_artist().get_name(),
@@ -849,52 +854,52 @@ def generateTrackPool_tags(count: int, trackSeed: pylast.Track, artistSeed: pyla
                         if tempCount == y:
                             done = True
                             break
-                    except WSError:
+                    except pylast.WSError:
                         continue
                 if done:
                     break
             if done:
                 break
-    print("--->Step 2 done<---")            
-    time.sleep(timeRateLimit)  
-    #Step three -> Run through tags generate floor(z/3) for each of the top tags
-    j = math.floor(z/3)
-    for i in range(0,3):
-        #Take the max frequency tag, then find songs as usual, then remove it from the dictionary when done
-        maxTagName = max(uniqueTags, key = uniqueTags.get) #<- from stack exchange
+    print("--->Step 2 done<---")
+    time.sleep(timeRateLimit)
+    # Step three -> Run through tags generate floor(z/3) for each of the top tags
+    j = math.floor(z / 3)
+    for i in range(0, 3):
+        # Take the max frequency tag, then find songs as usual, then remove it from the dictionary when done
+        maxTagName = max(uniqueTags, key=uniqueTags.get)  # <- from stack exchange
 
-        #Loop count values, count tracks how many songs have been added
-        #previousLength tracks the past length of pool to make sure the values are added successfully
+        # Loop count values, count tracks how many songs have been added
+        # previousLength tracks the past length of pool to make sure the values are added successfully
         tempCount = 0
         previousLength = len(pool)
 
         tag = network.get_tag(maxTagName)
-        similarTracks = tag.get_top_tracks(limit = j + 10)
+        similarTracks = tag.get_top_tracks(limit=j + 10)
         for similar in similarTracks:
-            track = similar.item #pylist.track object
-            #Don't add tags back to uniqueTags (not the point here)
+            track = similar.item  # pylist.track object
+            # Don't add tags back to uniqueTags (not the point here)
             tags = track.get_top_tags()
             pool.add(Song(
-                ID = track.get_mbid(),
-                artist = track.get_artist().get_name(),
-                name = track.get_name(),
-                image = TryGetImage(track),
-                tags = [l.item.get_name() for l in tags[:3]],
+                ID=track.get_mbid(),
+                artist=track.get_artist().get_name(),
+                name=track.get_name(),
+                image=TryGetImage(track),
+                tags=[l.item.get_name() for l in tags[:3]],
                 playcount=track.get_playcount()
             ))
-            #Value added successfully
-            if(len(pool) == previousLength + tempCount + 1):
+            # Value added successfully
+            if (len(pool) == previousLength + tempCount + 1):
                 tempCount += 1
-            if(tempCount == j):
-                break   
-            
-        #Then remove top frequency item
-        del uniqueTags[maxTagName]
-        time.sleep(timeRateLimit/3)
+            if (tempCount == j):
+                break
 
-            
+                # Then remove top frequency item
+        del uniqueTags[maxTagName]
+        time.sleep(timeRateLimit / 3)
+
     print("--->Step 3 done<---")
     return pool
+
 
 # Algorithm to generate a diverse but cohesive playlist from our track pool
 def generate_playlist_tags(track_pool, num_tracks):
@@ -965,6 +970,7 @@ def generate_playlist_tags(track_pool, num_tracks):
 
     return playlist
 
+
 # Function to display the playlist in a user-friendly format
 def display_playlist(playlist, title="Your Personalized Playlist"):
     """Display the generated playlist with track info and tags."""
@@ -979,46 +985,47 @@ def display_playlist(playlist, title="Your Personalized Playlist"):
 
     print("\n" + "=" * 60)
 
-def generate_track_pool_popularity(track_seed: pylast.Track, artist_seed: pylast.Artist) -> List[Tuple[int, List[Song]]]:
+
+def generate_track_pool_popularity(track_seed: pylast.Track, artist_seed: pylast.Artist) -> List[
+    Tuple[int, List[Song]]]:
     from pylast import Track, Artist
     def generate_pool(seed):
         popularity_map: Dict[int, List[Song]] = {}
         if isinstance(seed, Track):
-            similar = seed.get_similar(limit = 10)
+            similar = seed.get_similar(limit=10)
             for i in similar:
                 current = i.item
                 popularity_score = current.get_listener_count() or 0
                 song = Song(
-                    ID = current.get_mbid(),
-                    artist = current.get_artist().get_name(),
-                    name = current.get_title(),
-                    image = TryGetCover(current),
-                    tags = None
+                    ID=current.get_mbid(),
+                    artist=current.get_artist().get_name(),
+                    name=current.get_title(),
+                    image=TryGetCover(current),
+                    tags=None
                 )
                 popularity_map.setdefault(popularity_score, []).append(song)
 
                 # Throttle API calls to avoid rate limiting
                 time.sleep(1)
         elif isinstance(seed, Artist):
-            similar = seed.get_similar(limit = 10)
+            similar = seed.get_similar(limit=10)
             for i in similar:
                 current = i.item
                 popularity_score = current.get_listener_count() or 0
 
-                for track in current.get_top_tracks(limit = 5):
+                for track in current.get_top_tracks(limit=5):
                     t = track.item
                     song = Song(
-                        ID = t.get_mbid(),
-                        artist = t.get_artist().get_name(),
-                        name = t.get_title(),
-                        image = TryGetCover(t),
-                        tags = None
+                        ID=t.get_mbid(),
+                        artist=t.get_artist().get_name(),
+                        name=t.get_title(),
+                        image=TryGetCover(t),
+                        tags=None
                     )
                     popularity_map.setdefault(popularity_score, []).append(song)
                 # Throttle API calls to avoid rate limiting
                 time.sleep(1)
         return popularity_map
-
 
     similar_tracks = generate_pool(track_seed)
     similar_artist = generate_pool(artist_seed)
@@ -1028,13 +1035,14 @@ def generate_track_pool_popularity(track_seed: pylast.Track, artist_seed: pylast
     scores = tempT + tempA
     return scores
 
-def generate_playlist_popularity(scores: List[Tuple[int, List[Song]]], size: int) -> List[Song]:
 
+def generate_playlist_popularity(scores: List[Tuple[int, List[Song]]], size: int) -> List[Song]:
     split_point = int(len(scores) * 0.30)
     popular_scores = scores[len(scores) - split_point:]
     remaining_scores = scores[:len(scores) - split_point]
 
     used = set()
+
     def insert_song(bucket):
         while True:
             popularity_score, songs = random.choice(bucket)
@@ -1051,6 +1059,7 @@ def generate_playlist_popularity(scores: List[Tuple[int, List[Song]]], size: int
 
     random.shuffle(playlist)
     return playlist
+
 
 def main():
     print("🎵 Welcome to the Super Auto Playlist 🎵")
@@ -1105,5 +1114,7 @@ def main():
         # Display the results nicely formatted
         title = f"Personalized Playlist based on {tempObjectT.name} and {tempObjectA.name}"
         display_playlist(playlist, title)
+
+
 if __name__ == "__main__":
     main()
