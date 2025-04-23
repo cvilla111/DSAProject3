@@ -479,13 +479,19 @@ class PlaylistApp:
             method = "Music Tags" if self.algorithm == "tags" else "Popularity"
             print(f"Building playlist based on {self.selected_track_obj.name} & {self.selected_artist_obj.name}")
 
-            # Get pool of potential tracks
-            track_pool = pg.generateTrackPool_tags(40, self.selected_track, self.selected_artist)
-            print(f"Found {len(track_pool)} potential tracks!")
-
             size = self.playlist_size.get()
 
-            # Generate playlist using selected method
+            if self.algorithm == "tags":
+                track_pool = pg.generateTrackPool_tags(40, self.selected_track, self.selected_artist)
+            else:
+                buckets = pg.generate_track_pool_popularity(self.selected_track, self.selected_artist)
+
+                track_pool = [song for _, song_list in buckets for song in song_list]
+
+                track_pool = track_pool[:40]
+
+            print(f"Found {len(track_pool)} potential tracks!")
+
             if self.algorithm == "tags":
                 self.playlist = self._generate_playlist_by_tags(track_pool, size)
             else:
@@ -557,6 +563,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 import pylast
 import math
 import random
