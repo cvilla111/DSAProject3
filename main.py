@@ -604,6 +604,13 @@ def TryGetImage(artist: pylast.Artist):
         return artist.get_image()
     except Exception:
         return None
+    
+def TryGetTags(track: pylast.Track):
+    try:
+        return track.get_top_tags()
+    except Exception:
+        return None
+
 
 def initialQuery(type):
     query = input(f"Enter search query for favorite {type}: ")
@@ -672,69 +679,110 @@ def initialQuery(type):
             tags=None
         ))
 
-# Main function to generate our track pool from different sources
-# I'm using a 3-part approach to ensure musical diversity:
-# 1. Similar tracks to seed track
-# 2. Tracks from similar artists
-# 3. Tracks from related tags
+#trackSeed,artistSeed are pylast objects
+#I know that just calling get_recommended on like 400 tracks is cheating, so I want to create a track pool with varying sources
+#1/4 of the tracks will be generated from lastFM's recommendation algorithm (simple: quarter cheating)
+#1/4 of the tracks will be generated from related artists
+#Remaining tracks generated from the highest frequency tags of the tracks form the last three
+#get some random artists -> get random albums -> get random songs from each
+
+#After, pad with some random songs
+
+#outputs custom objects not pylast objects
 def generateTrackPool_tags(count: int, trackSeed: pylast.Track, artistSeed: pylast.Artist = None):
+    
+    #I found that there's some edge cases that arise when you don't generate enough tracks, so impose some minimum
+    if(count < 20):
+        raise ValueError("Count needs to be >= 20")
+        return 0
+    #Throttles execution to not be caught by rate limitter
+    timeRateLimit = count/10
+
+    #generate seed integers to get varying track amounts per step 
     x = 0
     y = 0
     z = 0
 
-    while (True):
-        sigma = count * (1 / 20)
-        mean = count * 1 / 4
-        x = math.floor(random.gauss(mean, sigma))  # Tracks from similar tracks
-        y = math.floor(random.gauss(mean, sigma))  # Tracks from similar artists
-        z = count - x - y  # Tracks from tags
-        if (x > 0 and y > 0 and z > 0):
+    while(True):
+        #SYSTEM PARAMETERS
+        sigma = count * (1/8)
+        mean = count * 1/4
+        x = math.floor(random.gauss(mean, sigma))
+        y = math.floor(random.gauss(mean, sigma))
+        z = count - x - y
+        if(x > 0 and y > 0 and z > 0):
             break
+            
+    pool = set() #Filled with Song class from this code
+    uniqueTags = defaultdict(int)
+    uniqueArtists = set() #Filled with Artist class from this code
 
-    pool = set()  # Using a set to automatically avoid duplicates
-    uniqueTags = set()  # Track all tags for later use
-    uniqueArtists = set()  # Track all artists for potential future features
-    uniqueArtists.add(
-        Artist(ID=artistSeed.get_mbid(), name=artistSeed.get_name(), image=TryGetImage(artistSeed), tags=None))
+    #Adding seed artist
+    uniqueArtists.add(Artist(ID = artistSeed.get_mbid() , name = artistSeed.get_name() , image = TryGetImage(artistSeed), tags = None))
 
-    print(f"Generating {x} tracks from similar tracks...")
-    # Step one: generate x similar tracks TO seed track using BFS-kinda approach
+    #Bias the tags to the seed track -> Throughout this code, I use that lastFM api returns the tags from most frequent to least
+    seedTags = trackSeed.get_top_tags()[:3]
+
+    for tt in seedTags:
+        #Picked count/5 arbitrarily, but I think this should make sure step 3 uses the best tags
+        tag = tt.item
+        uniqueTags[tag.get_name()] += math.floor(count/5)
+
+
+
+    #Step one: generate x similar tracks TO seed track doing BFS-kinda thing
     tempTrack = trackSeed
     done = False
+
     while not done:
-        similarTracks = tempTrack.get_similar(limit=x)
+        try:
+            similarTracks = tempTrack.get_similar(limit = x)
+        except WSError:
+            print("Similar tracks not found, shutting down.")
+            return
         update = True
         for similar in similarTracks:
-            track = similar.item
+            
+            track = similar.item #pylist.track object
 
-            # Update the temp track for next iteration (BFS-like traversal)
             if update:
                 tempTrack = track
                 update = False
 
-            tags = track.get_top_tags()
-            # Fixed potential error when no tags are returned
-            firstTags = [l.item.get_name() for l in tags[:3]] if tags else []
-            uniqueTags.update(firstTags)
+            tags = TryGetTags(track)
 
-            # Add track to our pool
-            pool.add(Song(
-                ID=track.get_mbid(),
-                artist=track.get_artist().get_name(),
-                name=track.get_name(),
-                image=TryGetCover(track),
-                tags=firstTags
-            ))
-            # Fixed termination condition to ensure we get enough tracks
-            if (len(pool) >= x):
+            #Edge case where song doens't have tags
+            if(tags == None):
+                 pool.add(Song(
+                    ID = track.get_mbid(),
+                    artist = track.get_artist().get_name(),
+                    name = track.get_name(),
+                    image = TryGetImage(track),
+                    tags = None,
+                    playcount= track.get_playcount()
+                ))
+            else:
+
+                firstTags = [l.item for l in tags[:3]]
+                for u in firstTags:
+                    uniqueTags[u.get_name()] += 1
+
+                pool.add(Song(
+                    ID = track.get_mbid(),
+                    artist = track.get_artist().get_name(),
+                    name = track.get_name(),
+                    image = TryGetImage(track),
+                    tags = firstTags,
+                    playcount= track.get_playcount()
+                ))
+            if(len(pool) == x - 1):
                 done = True
                 break
-
-    # Throttle API calls to avoid rate limiting
-    time.sleep(1)
-
-    print(f"Generating {y} tracks from similar artists...")
-    # Step two: generate y similar tracks from similar artists
+    #throttle for rate limits
+    print("--->Step 1 done<---")
+    time.sleep(timeRateLimit)   
+    
+    #Step two: generate y similar tracks to seed album, BFS kind of thing again
     done = False
     tempArtist = artistSeed
     tempCount = 0
@@ -743,96 +791,109 @@ def generateTrackPool_tags(count: int, trackSeed: pylast.Track, artistSeed: pyla
         similarArtists = tempArtist.get_similar(limit=3)
         update = True
         for similar in similarArtists:
-            artist = similar.item
+            artist = similar.item  #pylast.Artist object
 
-            # Update for next iteration
             if update:
                 tempArtist = artist
                 update = False
 
-            # Add to our artist collection
             uniqueArtists.add(Artist(
                 ID=artist.get_mbid(),
                 name=artist.get_name(),
                 image=TryGetImage(artist),
                 tags=None
             ))
-
-            # Get some albums from this artist
+            
             albums = artist.get_top_albums(limit=2)
+
 
             for top in albums:
                 album = top.item
 
-                # Handle edge case where a track might be a single with no album
+                #Accounting for edge case of track being a single
                 try:
                     tracks = album.get_tracks()
                 except pylast.WSError:
                     continue
 
-                # This adds unpredictability while still being curated
-                randomTracks = [t for t in tracks if random.choice([True, False])]
+                randomTracks = [t for t in tracks if random.choice([True, False])] #<- from stack exchange
                 for track in randomTracks:
-                    tags = track.get_top_tags()
-                    firstTags = [l.item.get_name() for l in tags[:3]] if tags else []
-                    uniqueTags.update(firstTags)
-                    pool.add(Song(
-                        ID=track.get_mbid(),
-                        artist=track.get_artist().get_name(),
-                        name=track.get_name(),
-                        image=TryGetCover(track),
-                        tags=firstTags
-                    ))
-                    tempCount += 1
-                    if tempCount >= y:
-                        done = True
-                        break
+                    #Theres some tracks that have bad database parameters for some reason, so wrap in try catch (bad I know)
+                    try:
+                        #Some errors from get_top_tags being blank, idk why pylast works like this but it does whatever
+                        tags = TryGetTags(track)
+                        if(tags == None):
+                            pool.add(Song(
+                                ID=track.get_mbid(),
+                                artist=track.get_artist().get_name(),
+                                name=track.get_name(),
+                                image=TryGetImage(track),
+                                tags=None,
+                                playcount=track.get_playcount()
+                            ))
+                        else:
+                            firstTags = [l.item for l in tags[:3]]
+                            for u in firstTags:
+                                uniqueTags[u.get_name()] += 1
+
+                            pool.add(Song(
+                                ID=track.get_mbid(),
+                                artist=track.get_artist().get_name(),
+                                name=track.get_name(),
+                                image=TryGetImage(track),
+                                tags=firstTags,
+                                playcount=track.get_playcount()
+                            ))
+
+                        tempCount += 1
+                        if tempCount == y:
+                            done = True
+                            break
+                    except WSError:
+                        continue
                 if done:
                     break
             if done:
                 break
+    print("--->Step 2 done<---")            
+    time.sleep(timeRateLimit)  
+    #Step three -> Run through tags generate floor(z/3) for each of the top tags
+    j = math.floor(z/3)
+    for i in range(0,3):
+        #Take the max frequency tag, then find songs as usual, then remove it from the dictionary when done
+        maxTagName = max(uniqueTags, key = uniqueTags.get) #<- from stack exchange
 
-    # Throttle API calls again
-    time.sleep(1)
+        #Loop count values, count tracks how many songs have been added
+        #previousLength tracks the past length of pool to make sure the values are added successfully
+        tempCount = 0
+        previousLength = len(pool)
 
-    print(f"Generating {z} tracks from popular tags...")
-    # Step three: generate z tracks from popular tags related to the seed track and artist
-    tag_count = 0
-    tag_list = list(uniqueTags)
-    random.shuffle(tag_list)  # Shuffle to get different tags each time
+        tag = network.get_tag(maxTagName)
+        similarTracks = tag.get_top_tracks(limit = j + 10)
+        for similar in similarTracks:
+            track = similar.item #pylist.track object
+            #Don't add tags back to uniqueTags (not the point here)
+            tags = track.get_top_tags()
+            pool.add(Song(
+                ID = track.get_mbid(),
+                artist = track.get_artist().get_name(),
+                name = track.get_name(),
+                image = TryGetImage(track),
+                tags = [l.item.get_name() for l in tags[:3]],
+                playcount=track.get_playcount()
+            ))
+            #Value added successfully
+            if(len(pool) == previousLength + tempCount + 1):
+                tempCount += 1
+            if(tempCount == j):
+                break   
+            
+        #Then remove top frequency item
+        del uniqueTags[maxTagName]
+        time.sleep(timeRateLimit/3)
 
-    for tag_name in tag_list:
-        if tag_count >= z:
-            break
-
-        try:
-            tag = network.get_tag(tag_name)
-            top_tracks = tag.get_top_tracks(limit=5)
-
-            for top in top_tracks:
-                track = top.item
-                if tag_count >= z:
-                    break
-
-                # Avoid duplicates by checking if the track is already in the pool
-                # This ensures variety even with overlapping tags
-                track_id = f"{track.get_artist().get_name()} - {track.get_name()}"
-                is_duplicate = any(s.id == track_id for s in pool)
-
-                if not is_duplicate:
-                    tags = track.get_top_tags()
-                    firstTags = [l.item.get_name() for l in tags[:3]] if tags else []
-                    pool.add(Song(
-                        ID=track_id,
-                        artist=track.get_artist().get_name(),
-                        name=track.get_name(),
-                        image=TryGetCover(track),
-                        tags=firstTags
-                    ))
-                    tag_count += 1
-        except pylast.WSError:
-            continue  # Skip tags that cause errors
-
+            
+    print("--->Step 3 done<---")
     return pool
 
 # Algorithm to generate a diverse but cohesive playlist from our track pool
