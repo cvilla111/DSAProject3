@@ -739,10 +739,12 @@ def generateTrackPool_tags(count: int, trackSeed: pylast.Track, artistSeed: pyla
     # Step one: generate x similar tracks TO seed track doing BFS-kinda thing
     tempTrack = trackSeed
     done = False
-
     while not done:
         try:
             similarTracks = tempTrack.get_similar(limit=x)
+            if not similarTracks:
+                print("⚠️ No similar tracks found, skipping step 1.")
+                break
         except pylast.WSError:
             print("Similar tracks not found, shutting down.")
             return
