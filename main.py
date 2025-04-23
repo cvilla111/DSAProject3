@@ -480,7 +480,7 @@ class PlaylistApp:
             print(f"Building playlist based on {self.selected_track_obj.name} & {self.selected_artist_obj.name}")
 
             # Get pool of potential tracks
-            track_pool = pg.generateTrackPool(40, self.selected_track, self.selected_artist)
+            track_pool = pg.generateTrackPool_tags(40, self.selected_track, self.selected_artist)
             print(f"Found {len(track_pool)} potential tracks!")
 
             size = self.playlist_size.get()
